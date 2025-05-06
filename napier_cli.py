@@ -3,6 +3,9 @@ import asyncio
 import sys
 import os
 import json
+import time
+import threading
+import subprocess
 from typing import Optional, List, Dict, Any
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -17,6 +20,8 @@ from rich.markdown import Markdown
 from rich import print as rprint
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.spinner import Spinner
+from rich.live import Live
 
 # Load environment variables from .env file
 load_dotenv()
@@ -82,6 +87,25 @@ class NapierConfig:
         """List all configured MCP servers"""
         return self.config.get("mcpServers", {})
 
+class ThinkingAnimation:
+    """Class to display a thinking animation while waiting for a response"""
+    def __init__(self, message="Thinking"):
+        self.message = message
+        self.spinner = Spinner("dots", text=message)
+        self.live = Live(self.spinner, refresh_per_second=10)
+        self.running = False
+        self.thread = None
+        
+    def start(self):
+        """Start the thinking animation"""
+        self.running = True
+        self.live.start()
+        
+    def stop(self):
+        """Stop the thinking animation"""
+        self.running = False
+        self.live.stop()
+
 class NapierClient:
     """
     Napier - An MCP client that connects AI models with third-party applications.
@@ -111,6 +135,34 @@ class NapierClient:
 You can help users with various tasks and answer questions.
 When you're connected to MCP servers, you can use tools to interact with third-party applications.
 Be concise, helpful, and friendly in your responses."""
+    
+    async def initialize_playwright(self):
+        """Initialize Playwright with browser installation"""
+        console.print("[yellow]Initializing Playwright and installing browsers...[/yellow]")
+        
+        # Create a thinking animation
+        thinking = ThinkingAnimation("Installing Playwright browsers")
+        thinking.start()
+        
+        try:
+            # Run the browser installation command
+            result = subprocess.run(
+                ["npx", "playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            thinking.stop()
+            console.print("[green]Successfully installed Playwright browsers![/green]")
+            return True
+        except subprocess.CalledProcessError as e:
+            thinking.stop()
+            console.print(f"[bold red]Error installing Playwright browsers: {e.stderr}[/bold red]")
+            return False
+        except Exception as e:
+            thinking.stop()
+            console.print(f"[bold red]Error during Playwright initialization: {str(e)}[/bold red]")
+            return False
     
     async def connect_to_server(self, server_script_path: str):
         """Connect to an MCP server
@@ -213,6 +265,10 @@ Be concise, helpful, and friendly in your responses."""
                 border_style="green"
             ))
             
+            # Automatically initialize Playwright if it's the Playwright server
+            if server_name.lower() == "playwright":
+                await self.initialize_playwright()
+            
             return tool_names
         except Exception as e:
             console.print(f"[bold red]Error connecting to server: {str(e)}[/bold red]")
@@ -263,6 +319,10 @@ INSTRUCTIONS:
 
 Always make sure to follow the exact input schema for each tool when making a call."""
 
+        # Create and start thinking animation
+        thinking = ThinkingAnimation()
+        thinking.start()
+        
         try:
             # Initialize Gemini chat
             chat = self.model.start_chat(history=self.chat_history)
@@ -290,22 +350,33 @@ Always make sure to follow the exact input schema for each tool when making a ca
                         tool_name = tool_call.get("tool_name")
                         parameters = tool_call.get("parameters", {})
                         
+                        thinking.stop()  # Stop thinking animation to show tool execution
                         console.print(f"[bold cyan]Executing tool:[/bold cyan] {tool_name}")
                         console.print(f"[cyan]Parameters:[/cyan] {json.dumps(parameters, indent=2)}")
                         
+                        # Start thinking animation for tool execution
+                        tool_thinking = ThinkingAnimation(f"Executing {tool_name}")
+                        tool_thinking.start()
+                        
                         # Execute tool call
                         result = await self.session.call_tool(tool_name, parameters)
+                        tool_thinking.stop()
+                        
+                        # Clean up the tool result, especially for Playwright
+                        result_content = self._clean_tool_output(tool_name, result.content)
                         
                         # Format tool result for display
-                        result_str = f"\n[Tool Result: {tool_name}]\n{result.content}\n"
+                        result_str = f"\n[Tool Result]\n{result_content}\n"
                         final_response.append(result_str)
                         
                         # Send tool result back to Gemini
+                        thinking.start()  # Restart thinking animation for follow-up
                         followup_system_prompt = f"""The tool '{tool_name}' returned the following result:
 
 {result.content}
 
-Please analyze this result and provide a helpful response to the user based on this information."""
+Please analyze this result and provide a helpful response to the user based on this information.
+Keep your response focused on the insights from the tool result."""
 
                         followup_response = chat.send_message(followup_system_prompt)
                         final_response.append(followup_response.text)
@@ -318,19 +389,59 @@ Please analyze this result and provide a helpful response to the user based on t
                         console.print(f"[bold red]Error executing tool: {str(e)}[/bold red]")
                         final_response.append(f"Error executing tool: {str(e)}")
                 
+                thinking.stop()  # Stop thinking animation before final response
                 return "\n".join(final_response)
             else:
                 # No tool calls, just return the response
+                thinking.stop()  # Stop thinking animation
                 return response_text
                 
         except Exception as e:
+            thinking.stop()  # Make sure to stop animation on error
             console.print(f"[bold red]Error: {str(e)}[/bold red]")
             return f"Error processing query: {str(e)}"
+    
+    def _clean_tool_output(self, tool_name: str, output: str) -> str:
+        """Clean and format tool output for better display"""
+        if "playwright" in tool_name.lower():
+            # Try to extract the most relevant information from Playwright output
+            import re
+            
+            # Remove noisy HTML, XML, or markdown tags
+            output = re.sub(r'```(?:html|xml|markdown|)\n', '', output)
+            output = re.sub(r'```', '', output)
+            
+            # Try to extract useful content from Playwright operations
+            if "screenshot" in tool_name.lower():
+                return "Screenshot captured successfully."
+                
+            if "navigate" in tool_name.lower() or "goto" in tool_name.lower():
+                return f"Navigated to the requested page successfully."
+                
+            if "click" in tool_name.lower():
+                return "Clicked on the specified element."
+                
+            if "get" in tool_name.lower() and "content" in tool_name.lower():
+                # For content extraction, try to keep it clean but informative
+                # Remove any leading/trailing whitespace and limit length
+                output = output.strip()
+                if len(output) > 1000:
+                    output = output[:997] + "..."
+                
+            # For other Playwright operations, provide a generic clean response
+            if len(output.strip()) == 0:
+                return "Operation completed successfully."
+        
+        return output
 
     async def chat_with_gemini(self, query: str) -> str:
         """Chat directly with Gemini without using MCP tools"""
         # Add user query to history
         self.chat_history.append({"role": "user", "parts": [query]})
+        
+        # Create and start thinking animation
+        thinking = ThinkingAnimation()
+        thinking.start()
         
         try:
             # Initialize Gemini chat with system prompt
@@ -345,9 +456,11 @@ Please analyze this result and provide a helpful response to the user based on t
             response_text = response.text
             self.chat_history.append({"role": "model", "parts": [response_text]})
             
+            thinking.stop()  # Stop thinking animation
             return response_text
                 
         except Exception as e:
+            thinking.stop()  # Make sure to stop animation on error
             console.print(f"[bold red]Error: {str(e)}[/bold red]")
             return f"Error: {str(e)}"
             
@@ -456,7 +569,8 @@ Please analyze this result and provide a helpful response to the user based on t
                     query = f"I want to use the '{tool_name}' tool to {parts[1]}"
                         
                     response = await self.process_query(query)
-                    console.print(Panel(Markdown(response), title="AI Response", border_style="cyan"))
+                    # Print the response directly without a panel
+                    console.print(Markdown(response))
                 
                 elif user_input.strip() and user_input.startswith('/'):
                     console.print("[bold yellow]Unknown command. Type '/help' for assistance.[/bold yellow]")
@@ -469,7 +583,8 @@ Please analyze this result and provide a helpful response to the user based on t
                         # Direct chat with Gemini
                         response = await self.chat_with_gemini(user_input)
                         
-                    console.print(Panel(Markdown(response), title="AI Response", border_style="cyan"))
+                    # Print the response directly without a panel
+                    console.print(Markdown(response))
                     
             except Exception as e:
                 console.print(f"[bold red]Error: {str(e)}[/bold red]")
