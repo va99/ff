@@ -1,0 +1,41 @@
+# Use a base image with Go and Python installed
+FROM python:3.9-slim as base
+
+# Install required dependencies for WhatsApp bridge and Go
+RUN apt-get update && apt-get install -y \
+    git \
+    build-essential \
+    libsqlite3-dev \
+    golang \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone the whatsapp-mcp repository into the container and clean up
+RUN git clone https://github.com/lharries/whatsapp-mcp.git /whatsapp-mcp && \
+    rm -rf /whatsapp-mcp/.git
+
+# Set the working directory to the repository
+WORKDIR /whatsapp-mcp
+
+# Initialize the Go module (you can skip this if you already have go.mod)
+RUN go mod init whatsapp-client
+
+# Get the Go dependencies
+RUN go get -v ./...
+
+# Install Python dependencies manually (if needed)
+RUN pip install --no-cache-dir flask requests
+
+# Create a supervisord config file to manage both processes
+RUN echo "[supervisord]" > /etc/supervisord.conf && \
+    echo "nodaemon=true" >> /etc/supervisord.conf && \
+    echo "[program:go-server]" >> /etc/supervisord.conf && \
+    echo "command=go run main.go" >> /etc/supervisord.conf && \
+    echo "[program:python-server]" >> /etc/supervisord.conf && \
+    echo "command=python3 /whatsapp-mcp/whatsapp-mcp-server/main.py" >> /etc/supervisord.conf
+
+# Expose necessary ports for the WhatsApp bridge and MCP server
+EXPOSE 8080
+
+# Start supervisord to manage both services
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]

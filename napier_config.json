@@ -1,0 +1,25 @@
+{
+    "mcpServers": {
+        "playwright": {
+            "command": "docker",
+            "args": [
+                "run", "-i", "--rm", "--init", "mcp/playwright"
+            ]
+        },
+        "whatsapp": {
+            "command": "docker",
+            "args": [
+                "run", "-i", "--rm", "--init", "mcp/whatsapp-bridge"
+            ]
+        }
+    },
+    "defaults": {
+        "server": "whatsapp"
+    },
+    "napier": {
+        "model": "gemini-1.5-pro",
+        "api_config": {
+            "temperature": 0.2
+        }
+    }
+}

@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  whatsapp:
+    build:
+      context: .
+      dockerfile: Dockerfile.whatsapp  # Use the specific Dockerfile name
+    container_name: whatsapp-bridge
+    command: ["python3", "/whatsapp-mcp/whatsapp-mcp-server/main.py"]  # Ensure the full path is used
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/whatsapp-mcp
+    environment:
+      - TZ=UTC
